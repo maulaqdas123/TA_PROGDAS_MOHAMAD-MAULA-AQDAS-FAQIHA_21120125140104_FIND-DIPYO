@@ -44,7 +44,8 @@ class Bus
     public $kapasitas;
     public $posisiHalte;
     public $waktuTibaEstimasi;
-    public $penumpangAktif;
+    // REVISI: penumpangAktif kini menggunakan No. Kursi (Key) => Data Penumpang (Value)
+    public $penumpangAktif; 
     public $imageUrl;
 
     public function __construct($id, $nama, $kapasitas, $imageUrl)
@@ -55,12 +56,38 @@ class Bus
         $this->posisiHalte = rand(0, 12);
         $this->waktuTibaEstimasi = date('H:i:s', time() + rand(5, 30) * 60);
         $sessionKey = 'bus_state_' . $id;
+        // PENGKONDISIAN: Muat data dari session
         if (isset($_SESSION[$sessionKey])) { $this->penumpangAktif = $_SESSION[$sessionKey]; } else { $this->penumpangAktif = []; }
         $this->imageUrl = $imageUrl;
     }
 
     // METHOD: Menghitung jumlah kursi tersedia
     public function getKursiTersedia() { return $this->kapasitas - count($this->penumpangAktif); }
+
+    // METHOD: Mendapatkan daftar nomor kursi yang tersedia
+    public function getKursiTersediaList() {
+        $available = [];
+        // PERULANGAN: Mengecek dari kursi 1 hingga kapasitas
+        for ($i = 1; $i <= $this->kapasitas; $i++) {
+            // PENGKONDISIAN: Jika nomor kursi ($i) tidak ada di array penumpang aktif
+            if (!isset($this->penumpangAktif[$i])) {
+                $available[] = $i; // Tambahkan ke list tersedia
+            }
+        }
+        return $available; // TIPE DATA: Array integer
+    }
+
+    // METHOD: Mencari nomor kursi yang sedang diduduki oleh user ID ini
+    public function findUserSeat($userId) {
+        // PERULANGAN: Mencari di antara semua kursi yang terisi
+        foreach ($this->penumpangAktif as $seatNumber => $passengerData) {
+            // PENGKONDISIAN: Membandingkan NIM pengguna
+            if (isset($passengerData['nim']) && $passengerData['nim'] === $userId) {
+                return $seatNumber; // Mengembalikan nomor kursi jika ditemukan
+            }
+        }
+        return null;
+    }
 
     // METHOD: Update status bus di session (Simulasi DB)
     public function saveState() { $_SESSION['bus_state_' . $this->id] = $this->penumpangAktif; }
@@ -81,31 +108,44 @@ class Bus
     }
 
     // METHOD: Proses Tap In
-    public function tapIn($nim, $dariHalte, $keHalte, $busList)
+    public function tapIn($nim, $dariHalte, $keHalte, $busList, $nomorKursi)
     {
         // LOGIKA BARU: Cek apakah pengguna sudah Tap In di bus lain
         if (getUserActiveBus($nim, $busList) !== null) {
             return "Tap In gagal! Anda sudah Tap In di bus lain. Silakan Tap Out terlebih dahulu.";
         }
         
-        // PENGKONDISIAN: Cek ketersediaan kursi & apakah sudah tap in
-        if ($this->getKursiTersedia() > 0) {
-            if (!isset($this->penumpangAktif[$nim])) {
-                $this->penumpangAktif[$nim] = ['dari' => $dariHalte, 'ke' => $keHalte];
-                $this->saveState();
-                return "Tap In berhasil! Dari: $dariHalte, Tujuan: $keHalte. Selamat jalan!";
-            } else { return "Anda sudah Tap In di bus ini. Silakan Tap Out terlebih dahulu."; }
+        $nomorKursi = (int)$nomorKursi;
+        
+        // PENGKONDISIAN: Cek validitas kursi
+        if ($nomorKursi < 1 || $nomorKursi > $this->kapasitas) {
+             return "Tap In gagal! Nomor kursi tidak valid (1 sampai {$this->kapasitas}).";
         }
-        return "Bus Penuh! Tap In gagal.";
+        
+        // PENGKONDISIAN: Cek apakah kursi sudah terisi
+        if (isset($this->penumpangAktif[$nomorKursi])) {
+            return "Tap In gagal! Kursi {$nomorKursi} sudah terisi.";
+        }
+        
+        // LOGIKA TAP IN:
+        $this->penumpangAktif[$nomorKursi] = [ // Key adalah nomor kursi
+            'nim' => $nim, // Simpan NIM di dalam data kursi
+            'dari' => $dariHalte, 
+            'ke' => $keHalte
+        ];
+        $this->saveState();
+        return "Tap In berhasil! Kursi: {$nomorKursi}, Dari: $dariHalte, Tujuan: $keHalte. Selamat jalan!";
     }
 
     // METHOD: Proses Tap Out
     public function tapOut($nim)
     {
-        if (isset($this->penumpangAktif[$nim])) {
-            unset($this->penumpangAktif[$nim]);
+        $seatNumber = $this->findUserSeat($nim); // METHOD: Cari kursi pengguna
+        
+        if ($seatNumber !== null) {
+            unset($this->penumpangAktif[$seatNumber]); // Mengosongkan kursi
             $this->saveState();
-            return "Tap Out berhasil. Kursi sekarang kosong.";
+            return "Tap Out berhasil. Kursi {$seatNumber} sekarang kosong.";
         }
         return "Anda belum Tap In pada bus ini.";
     }
@@ -115,11 +155,15 @@ class Bus
 function getUserActiveBus($userId, $busList) {
     // PERULANGAN: Mencari melalui semua bus
     foreach ($busList as $bus) {
-        if (isset($bus->penumpangAktif[$userId])) {
-            return $bus->nama; // Mengembalikan nama bus jika ditemukan
+        // PERULANGAN: Mencari di array penumpang aktif
+        foreach ($bus->penumpangAktif as $passengerData) {
+            // PENGKONDISIAN KEAMANAN: Memastikan $passengerData adalah array dan memiliki key 'nim'
+            if (is_array($passengerData) && isset($passengerData['nim']) && $passengerData['nim'] === $userId) { 
+                return $bus->nama; // Mengembalikan nama bus jika ditemukan
+            }
         }
     }
-    return null; // Mengembalikan null jika pengguna tidak sedang naik bus manapun
+    return null; 
 }
 
 // ====================================================================
@@ -127,6 +171,9 @@ function getUserActiveBus($userId, $busList) {
 // ====================================================================
 
 if (session_status() == PHP_SESSION_NONE) { session_start(); }
+
+// FIX: Pindahkan inisialisasi $currentUserId ke sini, sebelum digunakan di perulangan simulasi
+$currentUserId = isset($_GET['user_id']) ? htmlspecialchars($_GET['user_id']) : '120221999';
 
 $FALLBACK_IMAGE_URL = "https://placehold.co/300x450/4B0082/ffffff?text=TRACKING+MODE";
 $NEW_DASHBOARD_BG_URL = 'https://i.ytimg.com/vi/k-eV4fmR0as/maxresdefault.jpg';
@@ -138,35 +185,65 @@ $busList = [];
 for ($i = 1; $i <= 6; $i++) { $busList[] = new Bus($i, "Dipyo-$i", 30, $cardImageUrlDefault); }
 for ($i = 1; $i <= 3; $i++) { $busList[] = new Bus(6 + $i, "Bus Trans-$i", 50, $cardImageUrlDefault); }
 
-// PERULANGAN: Simulasi Pergerakan dan Status Awal
+// LOGIKA SIMULASI DINAMIS YANG HANYA MENGUBAH STATUS KURSI
+$chanceToEmpty = 3; // 1 dari 3 chance kursi kosong saat reload
+$chanceToFill = 5; // 1 dari 5 chance kursi terisi saat reload
+
+// PERULANGAN: Simulasi Pergerakan dan Status Dinamis
 foreach ($busList as $bus) {
     $bus->updatePosisi(count($HALTE_UNDIP));
     $bus->updateImageUrl($HALTE_UNDIP, $HALTE_IMAGE_MAP);
 
-    $sessionKey = 'bus_state_' . $bus->id;
-    // PENGKONDISIAN: Simulasi Bus Penuh hanya jika session baru
-    if (!isset($_SESSION[$sessionKey])) {
-        // LOGIKA BARU: Dipyo-3 dan Dipyo-4 dibuat penuh
-        if (strpos($bus->nama, 'Dipyo-3') !== false || strpos($bus->nama, 'Dipyo-4') !== false) {
-             // Bus Dipyo-3 & Dipyo-4 dibuat penuh (30/30)
-             for ($j = 0; $j < $bus->kapasitas; $j++) { $bus->penumpangAktif["SIM_FULL_$j"] = ['dari' => 'Simulasi', 'ke' => 'Penuh']; }
-             $bus->saveState(); 
-        } elseif (strpos($bus->nama, 'Bus Trans-2') !== false) {
-             // Bus Trans-2 dibuat hampir penuh
-             for ($j = 0; $j < $bus->kapasitas - 1; $j++) { $bus->penumpangAktif["SIM_NEARLY_$j"] = ['dari' => 'Simulasi', 'ke' => 'Hampir Penuh']; }
-             $bus->saveState(); 
-        } elseif ($bus->id % 3 === 0) {
-            // Sisanya dibuat terisi acak (sebagian kursi)
-            for ($k = 0; $k < 5; $k++) {
-                $bus->penumpangAktif["SIM_PARTIAL_$k{$bus->id}"] = ['dari' => $HALTE_UNDIP[rand(0, 4)], 'ke' => $HALTE_UNDIP[rand(5, 12)]];
-            }
-             $bus->saveState();
+    // 1. Penumpang Turun (Mengosongkan Kursi)
+    $seatsToEmpty = [];
+    // PERULANGAN: Mencari kursi yang akan dikosongkan
+    foreach ($bus->penumpangAktif as $seatNumber => $passengerData) {
+        // PENGKONDISIAN: Hanya penumpang simulasi (NIM dimulai dari SIM) yang bisa turun dan ada chance 1/3
+        if (isset($passengerData['nim']) && substr($passengerData['nim'], 0, 3) === 'SIM' && rand(1, $chanceToEmpty) === 1) {
+             $seatsToEmpty[] = $seatNumber;
         }
     }
+    // PERULANGAN: Kosongkan kursi yang sudah dipilih
+    foreach ($seatsToEmpty as $seatNumber) {
+        unset($bus->penumpangAktif[$seatNumber]);
+    }
+
+    // 2. Penumpang Naik (Mengisi Kursi Kosong Secara Acak)
+    $availableSeats = $bus->getKursiTersediaList();
+    
+    // PENGKONDISIAN: Tentukan jumlah kursi yang akan diisi (maksimal 3 kursi baru per reload)
+    $targetNewFill = rand(0, 3); 
+    
+    // PENGKONDISIAN KEAMANAN KAPASITAS: Jika target fill lebih besar dari kursi tersedia, kurangi target fill
+    if ($targetNewFill > count($availableSeats)) {
+        $targetNewFill = count($availableSeats);
+    }
+
+    $filledCount = 0;
+    // PERULANGAN: Mengisi kursi hingga target tercapai (atau kursi habis)
+    // FIX PENTING: Pengecekan keamanan kapasitas ditambahkan di loop while
+    while ($filledCount < $targetNewFill && count($availableSeats) > 0 && $bus->getKursiTersedia() > 0) {
+        
+        $seatKey = array_rand($availableSeats);
+        $seatNumber = $availableSeats[$seatKey];
+         
+        // LOGIKA PENGISIAN KURSI BARU
+        $bus->penumpangAktif[$seatNumber] = [
+            'nim' => "SIM_RND_" . time() . "_{$seatNumber}", // ID unik
+            'dari' => $HALTE_UNDIP[rand(0, 4)], 
+            'ke' => $HALTE_UNDIP[rand(5, 12)]
+         ];
+        $filledCount++;
+        
+        // Hapus kursi dari daftar tersedia untuk mencegah pengisian ganda
+        unset($availableSeats[$seatKey]);
+    }
+
+    // Simpan semua perubahan status kursi untuk bus ini
+    $bus->saveState();
 }
 
 $tappedBus = null; $actionMessage = "";
-$currentUserId = isset($_GET['user_id']) ? htmlspecialchars($_GET['user_id']) : '120221999';
 $userActiveBus = getUserActiveBus($currentUserId, $busList); // PENGKONDISIAN: Cek bus aktif pengguna
 
 // LOGIKA POST REQUEST
@@ -174,8 +251,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bus_id_action'])) {
     $busId = (int)$_POST['bus_id_action']; $actionType = $_POST['action_type']; $userId = $_POST['user_id'];
     foreach ($busList as $bus) {
         if ($bus->id === $busId) {
-            // PENGKONDISIAN: Memanggil Tap In/Out dengan logika baru
-            if ($actionType === 'tap_in') { $actionMessage = $bus->tapIn($userId, $_POST['halte_dari'], $_POST['halte_ke'], $busList); }
+            // PENGKONDISIAN: Memanggil Tap In/Out dengan logika kursi baru
+            if ($actionType === 'tap_in') { 
+                $nomorKursi = $_POST['nomor_kursi'];
+                $actionMessage = $bus->tapIn($userId, $_POST['halte_dari'], $_POST['halte_ke'], $busList, $nomorKursi); 
+            }
             elseif ($actionType === 'tap_out') { $actionMessage = $bus->tapOut($userId); }
             break;
         }
@@ -283,7 +363,7 @@ body{background-color:var(--bg-dark);color:var(--text-light);margin:0;padding:0;
             echo "<h3><i class='fas {$icon}'></i> {$bus->nama}</h3>";
             echo "<p>Lokasi: <strong>{$HALTE_UNDIP[$bus->posisiHalte]}</strong></p>";
             echo "<p>Est. Tiba: <strong>{$bus->waktuTibaEstimasi} WIB</strong></p>";
-            echo "<p>Penumpang Aktif: <strong>" . count($bus->penumpangAktif) . " orang</strong></p>";
+            echo "<p>Penumpang Aktif: <strong>" . ($bus->kapasitas - $kursiTersedia) . " orang</strong></p>"; // REVISI BARIS INI
             echo "<p>Kursi Tersedia: <strong>{$kursiTersedia}</strong> / {$bus->kapasitas}</p>";
             echo "<span class='status-badge {$badgeClass}'>{$statusText}</span>";
             echo "<span class='details-button'>Detail / Tap In</span>";
@@ -303,8 +383,9 @@ body{background-color:var(--bg-dark);color:var(--text-light);margin:0;padding:0;
                 <p><i class="fas fa-chair"></i> Kursi Tersedia: <strong style="color: <?php echo $tappedBus->getKursiTersedia() > 0 ? 'var(--success)' : 'var(--danger)'; ?>;"><?php echo $tappedBus->getKursiTersedia(); ?></strong> / <?php echo $tappedBus->kapasitas; ?></p>
             </div>
             <?php
-            $isUserTappedIn = isset($tappedBus->penumpangAktif[$currentUserId]);
-            $userActiveBusName = getUserActiveBus($currentUserId, $busList); // PENGKONDISIAN: Cek bus aktif pengguna
+            $seatNumber = $tappedBus->findUserSeat($currentUserId); // METHOD: Cari kursi pengguna
+            $isUserTappedIn = ($seatNumber !== null);
+            $userActiveBusName = getUserActiveBus($currentUserId, $busList); 
 
             // LOGIKA UTAMA: PENGKONDISIAN UNTUK TAP IN/OUT
             if ($userActiveBusName !== null && $userActiveBusName !== $tappedBus->nama) {
@@ -317,9 +398,10 @@ body{background-color:var(--bg-dark);color:var(--text-light);margin:0;padding:0;
                 echo '<p style="font-size: 1rem;">Bus ini sudah mencapai kapasitas maksimum (0 kursi tersedia). Tap In gagal.</p>';
             } elseif ($isUserTappedIn) {
                 // KASUS 3: Form Tap Out (Jika sudah Tap In di bus ini)
-                $userTrip = $tappedBus->penumpangAktif[$currentUserId];
+                $userTrip = $tappedBus->penumpangAktif[$seatNumber];
                 echo '<h3 style="color: var(--text-light); border-bottom: 1px solid #444; padding-bottom: 0.5rem;"><i class="fas fa-user-check"></i> Perjalanan Aktif Anda</h3>';
                 echo '<div class="modal-info" style="border-left-color: var(--success);">';
+                echo "<p style='margin: 0.5rem 0;'>**Kursi:** <strong>" . $seatNumber . "</strong></p>"; // GUI: Tampilkan nomor kursi
                 echo "<p style='margin: 0.5rem 0;'>**Berangkat:** <strong>" . htmlspecialchars($userTrip['dari']) . "</strong></p>";
                 echo "<p style='margin: 0.5rem 0;'>**Tujuan:** <strong>" . htmlspecialchars($userTrip['ke']) . "</strong></p>";
                 echo '</div>';
@@ -332,16 +414,26 @@ body{background-color:var(--bg-dark);color:var(--text-light);margin:0;padding:0;
                 echo '</form>';
             } elseif (!$isUserTappedIn && $tappedBus->getKursiTersedia() > 0) {
                 // KASUS 4: Form Tap In (Jika belum Tap In dan ada kursi)
+                $availableSeats = $tappedBus->getKursiTersediaList(); // METHOD: Ambil list kursi kosong
                 echo '<h3 style="color: var(--text-light); border-bottom: 1px solid #444; padding-bottom: 0.5rem;"><i class="fas fa-arrow-alt-circle-right"></i> Fitur Tap In</h3>';
                 echo '<form method="POST" action="BusTracker.php">';
                 echo "<input type='hidden' name='bus_id_action' value='{$tappedBus->id}'>";
                 echo "<input type='hidden' name='action_type' value='tap_in'>";
                 echo "<input type='hidden' name='user_id' value='" . htmlspecialchars($currentUserId) . "'>";
+                
+                // GUI: Dropdown Nomor Kursi
+                echo '<div class="form-group"><label for="nomor_kursi">Pilih Nomor Kursi:</label><select name="nomor_kursi" required>';
+                echo '<option value="">--- Pilih Kursi ---</option>';
+                // PERULANGAN: Kursi Tersedia
+                foreach ($availableSeats as $seat) { echo "<option value='{$seat}'>Kursi {$seat}</option>"; }
+                echo '</select></div>';
+
                 // GUI: Dropdown Halte Berangkat
                 echo '<div class="form-group"><label for="halte_dari">Berangkat Dari:</label><select name="halte_dari" required><option value="">--- Pilih Halte Keberangkatan ---</option>';
                 // PERULANGAN: Halte Berangkat
                 foreach ($HALTE_UNDIP as $halte) { echo "<option value='{$halte}'>{$halte}</option>"; }
                 echo '</select></div>';
+                
                 // GUI: Dropdown Halte Tujuan
                 echo '<div class="form-group"><label for="halte_ke">Akan Turun Di (Tujuan):</label><select name="halte_ke" required><option value="">--- Pilih Halte Tujuan ---</option>';
                 // PERULANGAN: Halte Tujuan
